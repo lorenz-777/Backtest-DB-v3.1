@@ -97,13 +97,20 @@ def main() -> None:
     try:
         from fundamentals import process_ticker as fund_process
     except ImportError as e:
-        console.print(f"[red]❌ Import-Fehler: {e}[/red]")
+        console.print(f"[red]❌ Import-Fehler (fundamentals): {e}[/red]")
+        sys.exit(1)
+
+    try:
+        from ohlcv import process_ticker as ohlcv_process
+    except ImportError as e:
+        console.print(f"[red]❌ Import-Fehler (ohlcv): {e}[/red]")
         sys.exit(1)
 
     db = DB(args.db)
 
     stats = {
         "fund_ins": 0, "fund_upd": 0, "fund_fail": [],
+        "ohlcv_ins": 0, "ohlcv_upd": 0, "ohlcv_fail": [],
         "timeout":  [],
     }
 
@@ -135,6 +142,27 @@ def main() -> None:
             stats["fund_fail"].append(ticker)
             console.print(f"  [red]❌ Fundamentals: {e}[/red]")
 
+        # ── OHLCV ─────────────────────────────────────────────────────────────
+        try:
+            ins, upd = run_with_timeout(
+                ohlcv_process, ticker, db,
+                debug=args.debug, timeout=args.timeout
+            )
+            if ins or upd:
+                stats["ohlcv_ins"] += ins
+                stats["ohlcv_upd"] += upd
+                console.print(f"  [green]✓ OHLCV[/green]  [dim]+{ins} ~{upd}[/dim]")
+            else:
+                stats["ohlcv_fail"].append(ticker)
+                console.print(f"  [yellow]⚠ OHLCV: keine Daten[/yellow]")
+        except TickerTimeout:
+            stats["ohlcv_fail"].append(ticker)
+            stats["timeout"].append(f"{ticker}/ohlcv")
+            console.print(f"  [red]⏱ OHLCV: Timeout nach {args.timeout}s[/red]")
+        except Exception as e:
+            stats["ohlcv_fail"].append(ticker)
+            console.print(f"  [red]❌ OHLCV: {e}[/red]")
+
         elapsed = round(time.time() - ticker_start, 1)
         console.print(f"  [dim]⏱ {elapsed}s[/dim]")
         console.print()
@@ -153,6 +181,8 @@ def main() -> None:
         f"[bold]{batch_name}[/bold]  –  {len(tickers)} Ticker\n\n"
         f"[bold]Fundamentals:[/bold] [green]+{stats['fund_ins']}[/green]  [yellow]~{stats['fund_upd']}[/yellow]"
         + (f"  [red]Fehler: {len(stats['fund_fail'])}[/red]" if stats["fund_fail"] else "")
+        + f"\n[bold]OHLCV:[/bold]        [green]+{stats['ohlcv_ins']}[/green]  [yellow]~{stats['ohlcv_upd']}[/yellow]"
+        + (f"  [red]Fehler: {len(stats['ohlcv_fail'])}[/red]" if stats["ohlcv_fail"] else "")
         + (f"\n[red]Timeouts: {timeout_count}[/red]" if timeout_count else "")
     )
     console.print(Panel(lines, title="📦 Batch-Ergebnis", border_style="bright_black"))
