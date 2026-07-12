@@ -11,3 +11,7 @@ cloudscraper>=1.2.71
 
 # HTML-Parser (schneller als html.parser)
 lxml>=5.0.0
+
+# OHLCV-Kursdaten
+yfinance>=0.2.40
+pandas>=2.0.0
