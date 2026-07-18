@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# SQLite Databases (lokal, nicht pushen)
+*.db
+*.db-shm
+*.db-wal
+*.db-wal
+
+# Temporäre Dateien
+*.txt.bak
+schema1.txt
+schema2.txt
+test_tickers.txt
+data.db.local-backup
+missing_all.txt
+
+# macOS
+.DS_Store
+
+# Batch-Inputs (werden von GitHub Actions selbst generiert)
+batch_inputs/
+db_parts/
