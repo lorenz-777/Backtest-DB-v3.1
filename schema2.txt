@@ -1,0 +1,19 @@
+CREATE TABLE ohlcv (
+                ticker TEXT,
+                date TEXT,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume INTEGER,
+                PRIMARY KEY (ticker, date)
+            );
+CREATE TABLE fundamentals (
+                ticker TEXT,
+                date TEXT,
+                revenue REAL,
+                eps REAL,
+                debt_to_equity REAL,
+                profit_margin REAL,
+                PRIMARY KEY (ticker, date)
+            );
