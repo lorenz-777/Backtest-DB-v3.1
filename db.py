@@ -2,9 +2,9 @@
 """
 db.py – Zentrale SQLite-Datenbankschicht
 =========================================
-Tabellen angepasst an test_backtest.db:
-  - ohlcv
+Tabellen:
   - fundamentals (ticker, date, revenue, eps, debt_to_equity, profit_margin)
+  - estimates (ticker, period, period_type, eps_estimate, reported_eps, surprise_eps, revenue_estimate, reported_revenue, surprise_revenue)
 """
 
 import sqlite3
@@ -24,17 +24,6 @@ class DB:
 
     def _create_tables(self) -> None:
         self.con.executescript("""
-            CREATE TABLE IF NOT EXISTS ohlcv (
-                ticker TEXT,
-                date TEXT,
-                open REAL,
-                high REAL,
-                low REAL,
-                close REAL,
-                volume INTEGER,
-                PRIMARY KEY (ticker, date)
-            );
-
             CREATE TABLE IF NOT EXISTS fundamentals (
                 ticker TEXT,
                 date TEXT,
@@ -43,6 +32,19 @@ class DB:
                 debt_to_equity REAL,
                 profit_margin REAL,
                 PRIMARY KEY (ticker, date)
+            );
+
+            CREATE TABLE IF NOT EXISTS estimates (
+                ticker TEXT,
+                period TEXT,
+                period_type TEXT,
+                eps_estimate REAL,
+                reported_eps REAL,
+                surprise_eps REAL,
+                revenue_estimate REAL,
+                reported_revenue REAL,
+                surprise_revenue REAL,
+                PRIMARY KEY (ticker, period, period_type)
             );
         """)
         self.con.commit()
@@ -89,42 +91,62 @@ class DB:
         self.con.commit()
         return inserted, updated
 
-    # ─── UPSERT ohlcv ────────────────────────────────────────────────────────
+    # ─── UPSERT estimates ────────────────────────────────────────────────────
     
-    def upsert_ohlcv(self, records: list[dict]) -> tuple[int, int]:
+    def upsert_estimates(self, ticker: str, data: dict) -> tuple[int, int]:
         inserted = updated = 0
+        records = []
+        if "quarterly" in data:
+            for r in data["quarterly"]:
+                r["period_type"] = "quarterly"
+                records.append(r)
+        if "annual" in data:
+            for r in data["annual"]:
+                r["period_type"] = "annual"
+                records.append(r)
 
         for r in records:
-            ticker = r.get("ticker", "")
-            date = r.get("date", "")
+            period = r.get("period", "")
+            period_type = r.get("period_type", "")
             
-            if not ticker or not date:
+            if not period:
                 continue
 
             existing = self.con.execute(
-                "SELECT ticker FROM ohlcv WHERE ticker=? AND date=?",
-                (ticker, date),
+                "SELECT ticker FROM estimates WHERE ticker=? AND period=? AND period_type=?",
+                (ticker, period, period_type),
             ).fetchone()
 
+            # yfinance names conversion: 
+            # eps_est -> eps_estimate
+            # eps_act -> reported_eps
+            # eps_beat -> surprise_eps
             self.con.execute(
                 """
-                INSERT INTO ohlcv (ticker, date, open, high, low, close, volume)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(ticker, date) DO UPDATE SET
-                    open = excluded.open,
-                    high = excluded.high,
-                    low = excluded.low,
-                    close = excluded.close,
-                    volume = excluded.volume
+                INSERT INTO estimates (
+                    ticker, period, period_type, 
+                    eps_estimate, reported_eps, surprise_eps,
+                    revenue_estimate, reported_revenue, surprise_revenue
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(ticker, period, period_type) DO UPDATE SET
+                    eps_estimate = excluded.eps_estimate,
+                    reported_eps = excluded.reported_eps,
+                    surprise_eps = excluded.surprise_eps,
+                    revenue_estimate = excluded.revenue_estimate,
+                    reported_revenue = excluded.reported_revenue,
+                    surprise_revenue = excluded.surprise_revenue
                 """,
                 (
                     ticker,
-                    date,
-                    r.get("open"),
-                    r.get("high"),
-                    r.get("low"),
-                    r.get("close"),
-                    r.get("volume")
+                    period,
+                    period_type,
+                    r.get("eps_est"),
+                    r.get("eps_act"),
+                    r.get("eps_beat"),
+                    r.get("rev_est"),
+                    r.get("rev_act"),
+                    r.get("rev_beat")
                 ),
             )
             if existing: updated  += 1
@@ -141,6 +163,13 @@ class DB:
             "ORDER BY date DESC LIMIT ?",
             (ticker.upper(), limit),
         ).fetchall()
+        
+    def get_estimates(self, ticker: str, limit: int = 100) -> list[sqlite3.Row]:
+        return self.con.execute(
+            "SELECT * FROM estimates WHERE ticker=? "
+            "ORDER BY period DESC LIMIT ?",
+            (ticker.upper(), limit),
+        ).fetchall()
 
     def get_all_tickers(self) -> list[str]:
         rows = self.con.execute(
@@ -152,14 +181,20 @@ class DB:
         f = self.con.execute(
             "SELECT COUNT(*) as total, COUNT(DISTINCT ticker) as tickers FROM fundamentals"
         ).fetchone()
-        o = self.con.execute(
-            "SELECT COUNT(*) as total, COUNT(DISTINCT ticker) as tickers FROM ohlcv"
-        ).fetchone()
+        
+        # Falls die Tabelle existiert (z.B. neu erstellt)
+        try:
+            e = self.con.execute(
+                "SELECT COUNT(*) as total, COUNT(DISTINCT ticker) as tickers FROM estimates"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            e = {"total": 0, "tickers": 0}
+            
         return {
             "fund_rows":      f["total"],
             "fund_tickers":   f["tickers"],
-            "ohlcv_rows":     o["total"],
-            "ohlcv_tickers":  o["tickers"],
+            "est_rows":       e["total"],
+            "est_tickers":    e["tickers"],
         }
 
     # ─── Lifecycle ───────────────────────────────────────────────────────────
@@ -186,7 +221,7 @@ if __name__ == "__main__":
     con = Console()
 
     ap = argparse.ArgumentParser(
-        description="DB befüllen (Fundamentals) aus tickers.txt"
+        description="DB befüllen (Fundamentals & Estimates) aus tickers.txt"
     )
     ap.add_argument("--db",      default=DB_FILE,      help="DB-Pfad")
     ap.add_argument("--tickers", default="tickers.txt", help="Ticker-Datei")
@@ -204,8 +239,8 @@ if __name__ == "__main__":
         con.print(f"\n[bold cyan]DB:[/bold cyan] [dim]{args.db}[/dim]")
         con.print(f"  [bold]fundamentals[/bold] : {info['fund_rows']} Zeilen "
                   f"| {info['fund_tickers']} Ticker")
-        con.print(f"  [bold]ohlcv[/bold]        : {info['ohlcv_rows']} Zeilen "
-                  f"| {info['ohlcv_tickers']} Ticker\n")
+        con.print(f"  [bold]estimates[/bold]    : {info['est_rows']} Zeilen "
+                  f"| {info['est_tickers']} Ticker\n")
         sys.exit(0)
 
     # ── Ticker-Liste laden ────────────────────────────────────────────────────
@@ -235,15 +270,16 @@ if __name__ == "__main__":
     # ── Scraper importieren ───────────────────────────────────────────────────
     try:
         from fundamentals import process_ticker as fund_process
+        from earnings import process_ticker as earn_process
     except ImportError as e:
         con.print(f"[red]❌ Import-Fehler: {e}[/red]")
-        con.print("   Stelle sicher, dass fundamentals.py im selben Verzeichnis liegt.")
+        con.print("   Stelle sicher, dass fundamentals.py und earnings.py im selben Verzeichnis liegen.")
         sys.exit(1)
 
     con.print()
     con.print(Panel(
         f"[bold cyan]DB Befüllung[/bold cyan]\n"
-        f"[dim]Fundamentals für {len(tickers)} Ticker[/dim]\n"
+        f"[dim]Fundamentals & Estimates für {len(tickers)} Ticker[/dim]\n"
         f"[dim]Quelle: {args.tickers}  →  DB: {args.db}[/dim]",
         border_style="cyan", expand=False,
     ))
@@ -251,7 +287,9 @@ if __name__ == "__main__":
 
     db = DB(args.db)
     total_fund_ins = total_fund_upd = 0
+    total_est_ins = total_est_upd = 0
     failed_fund:  list[str] = []
+    failed_est:   list[str] = []
 
     for i, (ticker, exchange) in enumerate(tickers, 1):
         con.rule(f"[bold cyan]{i}/{len(tickers)}  {ticker}[/bold cyan]")
@@ -272,6 +310,24 @@ if __name__ == "__main__":
         except Exception as e:
             con.print(f"  [red]❌ Fundamentals Fehler: {e}[/red]")
             failed_fund.append(ticker)
+            
+        time.sleep(1.0)
+            
+        # ── Estimates ────────────────────────────────────────────────────────
+        con.print(f"[bold]📊 Estimates …[/bold]")
+        try:
+            est_data = earn_process(ticker, exchange, debug=args.debug)
+            if est_data:
+                ins, upd = db.upsert_estimates(ticker, est_data)
+                total_est_ins += ins
+                total_est_upd += upd
+                con.print(f"  [green]✓[/green] [dim]+{ins} neu  ~{upd} aktualisiert[/dim]")
+            else:
+                con.print(f"  [yellow]⚠ Keine Estimates-Daten[/yellow]")
+                failed_est.append(ticker)
+        except Exception as e:
+            con.print(f"  [red]❌ Estimates Fehler: {e}[/red]")
+            failed_est.append(ticker)
 
         con.print()
         if i < len(tickers):
@@ -289,9 +345,12 @@ if __name__ == "__main__":
     lines = (
         f"[bold]Fundamentals:[/bold] "
         f"[green]+{total_fund_ins} neu[/green]  [yellow]~{total_fund_upd} aktualisiert[/yellow]"
-        + (f"  [red]| Fehler: {', '.join(failed_fund)}[/red]" if failed_fund else "") + "\n\n"
+        + (f"  [red]| Fehler: {len(failed_fund)}[/red]" if failed_fund else "") + "\n"
+        f"[bold]Estimates:[/bold]    "
+        f"[green]+{total_est_ins} neu[/green]  [yellow]~{total_est_upd} aktualisiert[/yellow]"
+        + (f"  [red]| Fehler: {len(failed_est)}[/red]" if failed_est else "") + "\n\n"
         f"[dim]DB fundamentals: {info['fund_rows']} Zeilen | {info['fund_tickers']} Ticker[/dim]\n"
-        f"[dim]DB ohlcv:        {info['ohlcv_rows']} Zeilen | {info['ohlcv_tickers']} Ticker[/dim]"
+        f"[dim]DB estimates:    {info['est_rows']} Zeilen | {info['est_tickers']} Ticker[/dim]"
     )
     con.print(Panel(lines, title="📦 Zusammenfassung", border_style="bright_black"))
     con.print()

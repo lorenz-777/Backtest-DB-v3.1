@@ -5,7 +5,7 @@ scripts/merge_dbs.py
 Führt alle Teil-Datenbanken (db_batch_*.db) in eine einzige data.db zusammen.
 
 Strategie: INSERT OR REPLACE
-  – Da das Schema nun vereinfacht wurde (ohlcv & fundamentals) und keinen
+  – Da das Schema nun vereinfacht wurde (estimates & fundamentals) und keinen
     scraped_at Zeitstempel mehr besitzt, werden neuere Daten einfach stumpf 
     übergeschrieben (REPLACE).
 
@@ -40,10 +40,12 @@ TABLES = {
             "ticker", "date", "revenue", "eps", "debt_to_equity", "profit_margin"
         ],
     },
-    "ohlcv": {
-        "unique_cols": ["ticker", "date"],
+    "estimates": {
+        "unique_cols": ["ticker", "period", "period_type"],
         "all_cols": [
-            "ticker", "date", "open", "high", "low", "close", "volume"
+            "ticker", "period", "period_type", 
+            "eps_estimate", "reported_eps", "surprise_eps",
+            "revenue_estimate", "reported_revenue", "surprise_revenue"
         ],
     },
 }
@@ -52,17 +54,6 @@ TABLES = {
 def ensure_schema(con: sqlite3.Connection) -> None:
     """Erstellt Tabellen falls sie noch nicht existieren."""
     con.executescript("""
-        CREATE TABLE IF NOT EXISTS ohlcv (
-            ticker TEXT,
-            date TEXT,
-            open REAL,
-            high REAL,
-            low REAL,
-            close REAL,
-            volume INTEGER,
-            PRIMARY KEY (ticker, date)
-        );
-
         CREATE TABLE IF NOT EXISTS fundamentals (
             ticker TEXT,
             date TEXT,
@@ -71,6 +62,19 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             debt_to_equity REAL,
             profit_margin REAL,
             PRIMARY KEY (ticker, date)
+        );
+
+        CREATE TABLE IF NOT EXISTS estimates (
+            ticker TEXT,
+            period TEXT,
+            period_type TEXT,
+            eps_estimate REAL,
+            reported_eps REAL,
+            surprise_eps REAL,
+            revenue_estimate REAL,
+            reported_revenue REAL,
+            surprise_revenue REAL,
+            PRIMARY KEY (ticker, period, period_type)
         );
     """)
     con.commit()
@@ -114,7 +118,6 @@ def merge_table(
 
     inserted = len(rows)
     
-    # Da wir INSERT OR REPLACE verwenden, überschreibt er automatisch bei UNIQUE-Konflikt
     dst.executemany(
         f"INSERT OR REPLACE INTO {table} ({col_list}) VALUES ({placeholders})",
         rows,
